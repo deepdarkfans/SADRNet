@@ -4,7 +4,9 @@ import argparse
 import torch
 import random
 import config
+import cv2
 import json
+import scipy.io as sio
 from src.dataset.dataloader import img_to_tensor, uv_map_to_tensor
 from src.dataset.dataloader import make_data_loader, make_dataset, ImageData
 from src.model.loss import *
@@ -12,6 +14,7 @@ from PIL import Image
 from src.util.printer import DecayVarPrinter
 from src.visualize.render_mesh import render_face_orthographic, render_uvm
 from src.visualize.plot_verts import plot_kpt, compare_kpt
+from src.visualize.write import write_obj_with_colors
 from src.dataset.uv_face import uvm2mesh
 import matplotlib.pyplot as plt
 
@@ -101,7 +104,7 @@ class Evaluator:
         self.all_eval_data = val_dataset.val_data
 
     def show_face_uvm(self, face_uvm, img, gt_uvm=None, is_show=True):
-        ret = render_uvm(face_uvm, img)
+        ret,face_mesh = render_uvm(face_uvm, img)
         if is_show:
             plt.imshow(ret)
             plt.show()
@@ -109,6 +112,7 @@ class Evaluator:
         if is_show:
             plt.imshow(ret_kpt)
             plt.show()
+            #face_mesh.show()
         if gt_uvm is not None:
             ret_cmp = compare_kpt(face_uvm, gt_uvm, img)
             if is_show:
@@ -116,7 +120,7 @@ class Evaluator:
                 plt.show()
             return ret, ret_kpt, ret_cmp
         else:
-            return ret, ret_kpt
+            return ret, ret_kpt,face_mesh
 
     def evaluate(self, predictor, is_visualize=False):
         with torch.no_grad():
@@ -208,7 +212,9 @@ class Evaluator:
             for i in range(len(self.all_eval_data)):
                 item = self.all_eval_data[i]
                 init_img = item.get_image()
+
                 image = (init_img / 255.0).astype(np.float32)
+                [h, w, c] = image.shape
                 for ii in range(3):
                     image[:, :, ii] = (image[:, :, ii] - image[:, :, ii].mean()) / np.sqrt(
                         image[:, :, ii].var() + 0.001)
@@ -219,11 +225,31 @@ class Evaluator:
 
                 if is_visualize:
                     face_uvm_out = out['face_uvm'][0].cpu().permute(1, 2, 0).numpy() * config.POSMAP_FIX_RATE
-                    ret, ret_kpt = self.show_face_uvm(face_uvm_out, init_img, None, True)
+                    ret, ret_kpt, face_mesh = self.show_face_uvm(face_uvm_out, init_img, None, True)
+                    # pos_interpolated = np.array(image.cpu()).copy()
+                    # texture = cv2.remap(image, pos_interpolated[:, :, :2].astype(np.float32), None,
+                    #                     interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT,
+                    #                     borderValue=(0)).astype(np.float32)
+                    # texture = cv2.cvtColor(texture, cv2.COLOR_BGR2RGB)
+                    v=face_mesh.vertices
+                    f=face_mesh.faces
+                    v=np.array(v)
+                    f=np.array(f)
+                    save_vertices = v.copy()
                     # io.imsave(f'{output_folder}/{i}_cmp.jpg', ret_cmp)
+                    save_vertices[:, 1] = h - 1 - save_vertices[:, 1]
+                    save_vertices[:, 0] = np.minimum(np.maximum(save_vertices[:, 0], 0), w - 1)  # x
+                    save_vertices[:, 1] = np.minimum(np.maximum(save_vertices[:, 1], 0), h - 1)  # y
+                    ind = np.round(save_vertices).astype(np.int32)
+                    colors = init_img[ind[:, 1], ind[:, 0], :]  # n x 3
+                    write_obj_with_colors(f'{output_folder}/{i}_uv.obj', save_vertices, f,
+                                          colors)  # save 3d face(can open with meshlab)
+                    sio.savemat(f'{output_folder}/{i}_uv.mat', {'mesh': v})
+                    io.imsave(f'{output_folder}/{i}_uv.jpg', face_uvm_out)
                     io.imsave(f'{output_folder}/{i}_kpt.jpg', ret_kpt)
                     io.imsave(f'{output_folder}/{i}_face.jpg', ret)
                     io.imsave(f'{output_folder}/{i}_img.jpg', init_img)
+
 
         print('Dataset Results')
 
